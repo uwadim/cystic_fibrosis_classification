@@ -1,0 +1,13 @@
+# Parameters for training process
+embedding_size: 6
+learning_rate: 0.005
+weight_decay: 1e-3
+
+max_epoch: 1000
+
+stoping:
+  # Number of epochs to wait of decreasing of test loss before early stop
+  patience: 300
+  verbose: true
+  delta: 0.00001
+  path: '../checkpoints/checkpoint.pt'
