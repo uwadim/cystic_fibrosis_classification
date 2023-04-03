@@ -1,0 +1,12 @@
+# Where the dataset should be stored. This folder is split into raw_dir (downloaded dataset)
+# and processed_dir (processed data).
+root_directory: 'data'
+# Path to the network data
+network_fpath: 'data/raw/сystic_fibrosis_network_symmetrical_11_01_2023.csv'
+# network_fpath: 'data/raw/сystic_fibrosis_network_symmetrical_indic_11_01_2023.csv'
+# Path to the original data with labels
+original_fpath: 'data/сystic_fibrosis_11_01_2023 - сystic_fibrosis_11_01_2023.csv.csv'
+# Name of column that describes different patients
+id_colname: 'Sample Name'
+# Name of column that describes Label (target)
+label_colname: 'Group'

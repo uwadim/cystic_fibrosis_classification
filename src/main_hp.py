@@ -17,7 +17,7 @@ from omegaconf import DictConfig
 from dataset import PDataset  # type: ignore
 from model import SkipGCN  # type: ignore
 from pytorchtools import seed_everything, pyg_stratified_split  # type: ignore
-from train import train_valid_model, test_model  # type: ignore
+from train import train_valid_model, test_model, reset_model  # type: ignore
 
 
 @hydra.main(version_base='1.3', config_path="hp_conf", config_name="config")
@@ -57,6 +57,7 @@ def main(cfg: DictConfig) -> float:
 
     model = SkipGCN(config=cfg,
                     num_node_features=dataset.num_node_features)
+    reset_model(model)  # Reinitialize layers
     model = model.to(device)
     criterion = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(),

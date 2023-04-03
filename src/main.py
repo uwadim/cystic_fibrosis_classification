@@ -4,24 +4,23 @@ Simple run script without hyperparameter searching and mlflow support
 """
 
 import hydra
+import mlflow
 import torch  # type: ignore
 import torch_geometric  # type: ignore
 from torch_geometric.loader import DataLoader, ImbalancedSampler  # type: ignore
 
 from omegaconf import DictConfig
-import random
-from collections import defaultdict
 # from sklearn.model_selection import StratifiedKFold  # type: ignore
 
-import helpers  # type: ignore
 from dataset import PDataset  # type: ignore
-from model import SkipGCN  # type: ignore
+from model import GCN, SkipGCN  # type: ignore
 from pytorchtools import seed_everything, pyg_stratified_split  # type: ignore
-from train import train_valid_model, test_model  # type: ignore
+from train import train_valid_model, test_model, reset_model  # type: ignore
 
 
 @hydra.main(version_base='1.3', config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
+    print(f'{cfg["experiment_name"]=}')
     print(f"Torch version: {torch.__version__}")
     print(f"Cuda available: {torch.cuda.is_available()}")
     print(f"Torch geometric version: {torch_geometric.__version__}")
@@ -52,7 +51,7 @@ def main(cfg: DictConfig) -> None:
     #                                   random_state=cfg['random_state'])
     global_batch_size = 20
     train_sampler = ImbalancedSampler(train_dataset
-                                      ,num_samples=global_batch_size
+                                      , num_samples=global_batch_size
                                       )
 
     train_loader = DataLoader(train_dataset,
@@ -62,28 +61,41 @@ def main(cfg: DictConfig) -> None:
                               )
     # On GPU shuffle=True causes random results in ROC AUC for different calls of test_loader
     valid_loader = DataLoader(valid_dataset,
-                              batch_size=len(valid_dataset),
+                              batch_size=global_batch_size,
                               shuffle=False)
     test_loader = DataLoader(test_dataset,
-                             batch_size=len(test_dataset),
+                             batch_size=global_batch_size,
                              shuffle=False)
 
-    model = SkipGCN(config=cfg,
-                    num_node_features=dataset.num_node_features)
+    model = GCN(config=cfg,
+                num_node_features=dataset.num_node_features)
+    # model = SkipGCN(config=cfg,
+    #                 num_node_features=dataset.num_node_features)
+    reset_model(model)  # Reinitialize layers
     model = model.to(device)
-    criterion = torch.nn.BCEWithLogitsLoss()
+    criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
     optimizer = torch.optim.Adam(model.parameters(),
                                  lr=cfg.training['learning_rate'],
                                  weight_decay=cfg.training['weight_decay'])
 
-    train_valid_model(model=model, device=device, train_loader=train_loader, valid_loader=valid_loader,
-                      criterion=criterion, optimizer=optimizer, cfg=cfg)
+    mlflow.set_tracking_uri(uri=cfg.mlflow['tracking_uri'])  # type: ignore
+    mlflow.set_experiment(experiment_name=cfg['experiment_name'])  # type: ignore
 
-    test_model(model=model,
-               device=device,
-               test_loader=test_loader,
-               criterion=criterion,
-               cfg=cfg)
+    with mlflow.start_run():  # type: ignore
+        train_valid_model(model=model,
+                          device=device,
+                          train_loader=train_loader,
+                          valid_loader=valid_loader,
+                          criterion=criterion,
+                          optimizer=optimizer,
+                          cfg=cfg,
+                          mlflow_object=mlflow)
+
+        test_model(model=model,
+                   device=device,
+                   test_loader=test_loader,
+                   criterion=criterion,
+                   cfg=cfg)
 
     print('All Done!')
 

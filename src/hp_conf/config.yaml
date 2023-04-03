@@ -1,5 +1,5 @@
 # Configuration of script for hyperparameter search with optuna and mlflow
-experiment_name: 'Experiment 7_dropout'
+experiment_name: 'Experiment 13 node feaures ones'
 random_state: 17
 
 
@@ -12,11 +12,11 @@ hydra:
     direction: minimize
     study_name: skip_gcn_hp
     storage: null
-    n_trials: 10
+    n_trials: 12
     n_jobs: 12
     params:
-      training.batch_size: int(interval(80, 200))
-      #training.embedding_size: int(interval(3, 15))
+      #training.batch_size: int(interval(80, 200))
+      training.embedding_size: int(interval(3, 15))
 
 defaults:
   - data: config

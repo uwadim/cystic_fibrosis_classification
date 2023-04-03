@@ -60,8 +60,9 @@ class PDataset(Dataset):
         for col in ['p1', 'p2']:
             data[col].replace(replace_dict, inplace=True)
         edge_indices = torch.tensor(data[['p1', 'p2']].T.to_numpy())
-        # If the nodes have no features
-        #node_features = torch.tensor(np.ones(num_of_nodes).reshape(-1, 1))
+        # # If the nodes have no features
+        # num_of_nodes = len(replace_dict)
+        # node_features = torch.tensor(np.ones(num_of_nodes).reshape(-1, 1))
 
         for index, colname in enumerate(tqdm(self.ids, total=len(self.ids))):
             # single patient

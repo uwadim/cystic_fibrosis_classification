@@ -98,7 +98,7 @@ def train_valid_model(model,
                       optimizer,
                       cfg,
                       mlflow_object: Optional = None) -> float:  # type: ignore
-    print("Star training ...")
+    print("Start training ...")
     # to track the average training loss per epoch as the model trains
     avg_train_losses = []
     # to track the average validation loss per epoch as the model trains

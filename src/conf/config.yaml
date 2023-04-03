@@ -1,5 +1,6 @@
 # Configuration of script for learning graph embeddings
-
+#experiment_name: 'Experiment 200_TUDataset_SkipGCN'
+experiment_name: 'Experiment 13 nf ones'
 random_state: 17
 
 # Disable change directly and create output directories
@@ -16,3 +17,6 @@ defaults:
   - override hydra/job_logging: custom
   # Config from this file override the values of configs from the Defaults List
   - _self_
+
+mlflow:
+  tracking_uri: 'sqlite:///${hydra:runtime.cwd}/../mlflow/mlruns.db'

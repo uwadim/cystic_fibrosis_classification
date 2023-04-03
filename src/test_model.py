@@ -2,109 +2,130 @@ import argparse
 import os.path as osp
 from collections import defaultdict
 
-import torch.nn.functional as F
+import numpy as np
 import hydra
+import mlflow
 import torch  # type: ignore
+from torch import sigmoid
+import torch.nn.functional as F
+from omegaconf import DictConfig
+from sklearn.metrics import accuracy_score
 
 # from sklearn.model_selection import StratifiedKFold  # type: ignore
 
-
-import torch_geometric.transforms as T
-from torch_geometric.datasets import Planetoid
+from torch_geometric.datasets import TUDataset
 from torch_geometric.logging import log
+from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GCNConv
+from torch.nn import Linear
+from torch_geometric.nn import global_mean_pool as gmp
 from model import SkipGCN
-
+from train import reset_model
 
 
 class DummerClass:
     training = {'embedding_size': 8}
 
-class GCN(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels):
-        super().__init__()
-        self.conv1 = GCNConv(in_channels, hidden_channels, cached=True,
-                             normalize=not args.use_gdc)
-        self.conv2 = GCNConv(hidden_channels, out_channels, cached=True,
-                             normalize=not args.use_gdc)
 
-    def forward(self, x, edge_index, edge_weight=None):
+class GCN(torch.nn.Module):
+    def __init__(self, hidden_channels, dataset):
+        super(GCN, self).__init__()
+        torch.manual_seed(12345)
+        self.conv1 = GCNConv(dataset.num_node_features, hidden_channels)
+        self.conv2 = GCNConv(hidden_channels, hidden_channels)
+        self.conv3 = GCNConv(hidden_channels, hidden_channels)
+        self.lin = Linear(hidden_channels, dataset.num_classes)
+
+    def forward(self, x, edge_index, batch):
+        # 1. Obtain node embeddings
+        x = self.conv1(x, edge_index)
+        x = x.relu()
+        x = self.conv2(x, edge_index)
+        x = x.relu()
+        x = self.conv3(x, edge_index)
+
+        # 2. Readout layer
+        x = gmp(x, batch)  # [batch_size, hidden_channels]
+
+        # 3. Apply a final classifier
         x = F.dropout(x, p=0.5, training=self.training)
-        x = self.conv1(x, edge_index, edge_weight).relu()
-        x = F.dropout(x, p=0.5, training=self.training)
-        x = self.conv2(x, edge_index, edge_weight)
+        x = self.lin(x)
+
         return x
 
 
-def train(model, optimizer, data):
+def train(model, train_loader, criterion, optimizer):
     model.train()
-    optimizer.zero_grad()
-    out = model(data.x, data.edge_index, data.edge_attr, data.batch)
-    loss = F.cross_entropy(out[data.train_mask], data.y[data.train_mask])
-    loss.backward()
-    optimizer.step()
-    return float(loss)
+    running_loss = 0.0
+    step = 0
+    for data in train_loader:  # Iterate in batches over the training dataset.
+        optimizer.zero_grad()  # Clear gradients.
+        out = model(data.x, data.edge_index, data.edge_weight, data.batch)  # Perform a single forward pass.
+        loss = criterion(out, data.y.float().unsqueeze(-1))  # Compute the loss.
+        loss.backward()  # Derive gradients.
+        optimizer.step()  # Update parameters based on gradients.
+        running_loss += loss.item()
+        step += 1
+    return running_loss / step
 
 
 @torch.no_grad()
-def test(model, data):
+def test(model, loader, criterion):
     model.eval()
-    pred = model(data.x, data.edge_index, data.edge_attr).argmax(dim=-1)
 
-    return [
-        int((pred[mask] == data.y[mask]).sum()) / int(mask.sum())
-        for mask in [data.train_mask, data.val_mask, data.test_mask]
-    ]
+    running_loss = 0.0
+    step = 0
+    batch_accuracy = []
+    for data in loader:  # Iterate in batches over the training/test dataset.
+        out = model(data.x, data.edge_index, data.edge_weight, data.batch)
+        loss = criterion(out, data.y.float().unsqueeze(-1))  # Compute the loss.
+        pred = sigmoid(out)
+        y_true = data.y.detach().to('cpu').numpy()
+        y_pred = pred.detach().to('cpu').numpy()
+        batch_accuracy.append(accuracy_score(y_true, y_pred.round()))
+        running_loss += loss.item()
+        step += 1
+    return np.mean(batch_accuracy), running_loss / step  # Derive ratio of correct predictions.
 
 
-def main(args):
-    cfg = DummerClass()
-
+@hydra.main(version_base='1.3', config_path="conf", config_name="config")
+def main(cfg: DictConfig) -> None:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # init_wandb(name=f'GCN-{args.dataset}', lr=args.lr, epochs=args.epochs,
-    #            hidden_channels=args.hidden_channels, device=device)
 
-    path = osp.join(osp.dirname(osp.realpath(__file__)), '..', 'data', 'Planetoid')
-    dataset = Planetoid(path, args.dataset, transform=T.NormalizeFeatures())
-    data = dataset[0]
+    dataset = TUDataset(root='../data/TUDataset', name='MUTAG')
 
-    if args.use_gdc:
-        transform = T.GDC(
-            self_loop_weight=1,
-            normalization_in='sym',
-            normalization_out='col',
-            diffusion_kwargs=dict(method='ppr', alpha=0.05),
-            sparsification_kwargs=dict(method='topk', k=128, dim=0),
-            exact=True,
-        )
-        data = transform(data)
+    torch.manual_seed(12345)
+    dataset = dataset.shuffle()
 
-    # model = GCN(dataset.num_features, args.hidden_channels, dataset.num_classes)
-    model = SkipGCN(config=cfg, num_node_features=dataset.num_features)
-    model, data = model.to(device), data.to(device)
-    optimizer = torch.optim.Adam([
-        dict(params=model.conv1.parameters(), weight_decay=5e-4),
-        dict(params=model.conv2.parameters(), weight_decay=0)
-    ], lr=args.lr)  # Only perform weight-decay on first convolution.
+    train_dataset = dataset[:150]
+    test_dataset = dataset[150:]
 
-    best_val_acc = 0
-    for epoch in range(1, args.epochs + 1):
-        loss = train(model, optimizer, data)
-        train_acc, val_acc, tmp_test_acc = test(model, data)
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            test_acc = tmp_test_acc
-        log(Epoch=epoch, Loss=loss, Train=train_acc, Val=val_acc, Test=test_acc)
+    print(f'Number of training graphs: {len(train_dataset)}')
+    print(f'Number of test graphs: {len(test_dataset)}')
+
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+
+    # model = GCN(hidden_channels=64, dataset=dataset)  # type: ignore
+    model = SkipGCN(config=cfg, num_node_features=dataset.num_node_features)
+    reset_model(model)  # Reinitialize layers
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.training['learning_rate'])
+    # criterion = torch.nn.CrossEntropyLoss()
+    criterion = torch.nn.BCEWithLogitsLoss()
+
+    mlflow.set_tracking_uri(uri=cfg.mlflow['tracking_uri'])  # type: ignore
+    mlflow.set_experiment(experiment_name=cfg['experiment_name'])  # type: ignore
+    with mlflow.start_run():  # type: ignore
+        for epoch in range(1, 201):
+            train_loss = train(model, train_loader, criterion, optimizer)
+            train_acc, _ = test(model, train_loader, criterion)
+            test_acc, test_loss = test(model, test_loader, criterion)
+            mlflow.log_metric('train loss', train_loss, step=epoch)  # type: ignore
+            mlflow.log_metric('train accuracy', train_acc, step=epoch)  # type: ignore
+            mlflow.log_metric('test loss', test_loss, step=epoch)  # type: ignore
+            mlflow.log_metric('test accuracy', test_acc, step=epoch)  # type: ignore
+            print(f'Epoch: {epoch:03d}, Train Acc: {train_acc:.4f}, Test Acc: {test_acc:.4f}')
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='Cora')
-    parser.add_argument('--hidden_channels', type=int, default=16)
-    parser.add_argument('--lr', type=float, default=0.01)
-    parser.add_argument('--epochs', type=int, default=200)
-    parser.add_argument('--use_gdc', action='store_true', help='Use GDC')
-    # parser.add_argument('--wandb', action='store_true', help='Track experiment')
-    args = parser.parse_args()
-
-    main(args)  # type: ignore
+    main()  # type: ignore
